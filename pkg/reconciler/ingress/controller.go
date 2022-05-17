@@ -19,6 +19,7 @@ package ingress
 import (
 	"context"
 	"strings"
+	"sync"
 
 	v3 "github.com/envoyproxy/go-control-plane/envoy/service/discovery/v3"
 	xds "github.com/envoyproxy/go-control-plane/pkg/server/v3"
@@ -216,12 +217,21 @@ func NewController(ctx context.Context, cmw configmap.Watcher) *controller.Impl 
 		},
 		impl.Tracker)
 
+	wg := sync.WaitGroup{}
 	for _, ingress := range ingressesToSync {
-		if err := generator.UpdateInfoForIngress(
-			ctx, caches, ingress, &startupTranslator, config.ExternalAuthz.Enabled); err != nil {
-			logger.Fatalw("Failed prewarm ingress", zap.Error(err))
-		}
+		wg.Add(1)
+		go func(ingress *v1alpha1.Ingress) {
+			defer wg.Done()
+			if err := generator.UpdateInfoForIngress(
+				ctx, caches, ingress, &startupTranslator, config.ExternalAuthz.Enabled); err != nil {
+				logger.Fatalw("Failed prewarm ingress", zap.Error(err))
+			}
+		}(ingress)
 	}
+
+	// Wait for ingress prewarm
+	wg.Wait()
+
 	// Update the entire batch of ready ingresses at once.
 	if err := r.updateEnvoyConfig(ctx); err != nil {
 		logger.Fatalw("Failed to set initial envoy config", zap.Error(err))
